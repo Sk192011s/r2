@@ -912,7 +912,7 @@ Deno.serve(async (req: Request) => {
       respHeaders.set("Content-Type", mimeType);
       respHeaders.set(
         "Content-Disposition",
-        `inline; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`
+        `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`
       );
 
       const contentLength = upstream.headers.get("Content-Length");
