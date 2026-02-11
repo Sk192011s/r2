@@ -232,9 +232,9 @@ const SESSION_MAX_AGE = 60 * 60 * 8; // 8 hours
 
 async function createSessionToken(): Promise<string> {
   const payload = `session:${Date.now()}`;
-  const sig = await hmacSign(payload);
-  // base64url encode the payload + sig
-  const token = encodeURL(payload) + "." + sig;
+  const encodedPayload = encodeURL(payload);
+  const sig = await hmacSign(encodedPayload); // ← FIX: encodedPayload ကို sign
+  const token = encodedPayload + "." + sig;
   return token;
 }
 
@@ -246,7 +246,7 @@ async function verifySessionToken(token: string): Promise<boolean> {
     const payload = decodeURL(encodedPayload);
     if (!payload.startsWith("session:")) return false;
 
-    const valid = await hmacVerify(encodedPayload, sig);
+    const valid = await hmacVerify(encodedPayload, sig); // encodedPayload ကို verify
     if (!valid) return false;
 
     // Check expiry
@@ -587,6 +587,7 @@ function adminPage(
           const resp = await fetch('/${ADMIN_PATH}/api/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
             body: JSON.stringify({ url })
           });
           const data = await resp.json();
@@ -767,7 +768,7 @@ Deno.serve(async (req: Request) => {
     return new Response(adminPage(url.origin), {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
-        "Set-Cookie": `${SESSION_COOKIE}=${sessionToken}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${SESSION_MAX_AGE}`,
+        "Set-Cookie": `${SESSION_COOKIE}=${sessionToken}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_MAX_AGE}`,
       },
     });
   }
@@ -777,7 +778,7 @@ Deno.serve(async (req: Request) => {
     return new Response(loginPage(), {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
-        "Set-Cookie": `${SESSION_COOKIE}=deleted; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`,
+        "Set-Cookie": `${SESSION_COOKIE}=deleted; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
       },
     });
   }
