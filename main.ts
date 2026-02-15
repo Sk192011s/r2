@@ -1,6 +1,13 @@
+// ========== Configuration ==========
+
 const SECRET_KEY = Deno.env.get("SECRET_KEY") || "change-this-key-1234";
 const ADMIN_PATH = Deno.env.get("ADMIN_PATH") || "mySecret-panel-7x9k";
 const ADMIN_PASSWORD = Deno.env.get("ADMIN_PASSWORD") || "change-admin-pass-5678";
+// Admin URL => https://your-app.deno.dev/mySecret-panel-7x9k
+// ⚠️ SECRET_KEY, ADMIN_PATH, ADMIN_PASSWORD သုံးခုလုံး env variable ကနေ set ပါ
+
+// ========== MIME Type Map ==========
+
 const MIME_TYPES: Record<string, string> = {
   ".mp4": "video/mp4",
   ".mkv": "video/x-matroska",
@@ -13,15 +20,21 @@ const MIME_TYPES: Record<string, string> = {
   ".wmv": "video/x-ms-wmv",
   ".3gp": "video/3gpp",
 };
+
 const ALLOWED_EXTENSIONS = new Set(Object.keys(MIME_TYPES));
+
 function getMimeType(filename: string): string {
   const ext = filename.substring(filename.lastIndexOf(".")).toLowerCase();
   return MIME_TYPES[ext] || "application/octet-stream";
 }
+
 function getExtension(filename: string): string {
   const dot = filename.lastIndexOf(".");
   return dot !== -1 ? filename.substring(dot).toLowerCase() : "";
 }
+
+// ========== HTML Escape ==========
+
 function escapeHtml(str: string): string {
   return str
     .replace(/&/g, "&amp;")
@@ -30,6 +43,9 @@ function escapeHtml(str: string): string {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
 }
+
+// ========== Crypto Helpers (Eager Init — Cold Start မြန်အောင်) ==========
+
 const cachedKeyPromise = crypto.subtle.importKey(
   "raw",
   new TextEncoder().encode(SECRET_KEY),
@@ -37,9 +53,11 @@ const cachedKeyPromise = crypto.subtle.importKey(
   false,
   ["sign"]
 );
+
 async function getHmacKey(): Promise<CryptoKey> {
   return await cachedKeyPromise;
 }
+
 function uint8ToBase64Url(bytes: Uint8Array): string {
   let binary = "";
   for (let i = 0; i < bytes.length; i++) {
@@ -47,9 +65,10 @@ function uint8ToBase64Url(bytes: Uint8Array): string {
   }
   return btoa(binary)
     .replace(/\+/g, "-")
-    .replace(/\
+    .replace(/\//g, "_")
     .replace(/=+$/, "");
 }
+
 async function hmacSign(data: string): Promise<string> {
   const key = await getHmacKey();
   const sig = await crypto.subtle.sign(
@@ -59,17 +78,22 @@ async function hmacSign(data: string): Promise<string> {
   );
   return uint8ToBase64Url(new Uint8Array(sig));
 }
+
 async function hmacVerify(data: string, signature: string): Promise<boolean> {
   const expected = await hmacSign(data);
   if (expected.length !== signature.length) return false;
   const a = new TextEncoder().encode(expected);
   const b = new TextEncoder().encode(signature);
+  // Constant-time comparison — timing attack ကာကွယ်
   let mismatch = 0;
   for (let i = 0; i < a.length; i++) {
     mismatch |= a[i] ^ b[i];
   }
   return mismatch === 0;
 }
+
+// ========== URL Encode/Decode (No deprecated functions) ==========
+
 function encodeURL(url: string): string {
   const bytes = new TextEncoder().encode(url);
   let binary = "";
@@ -78,9 +102,10 @@ function encodeURL(url: string): string {
   }
   return btoa(binary)
     .replace(/\+/g, "-")
-    .replace(/\
+    .replace(/\//g, "_")
     .replace(/=+$/, "");
 }
+
 function decodeURL(encoded: string): string {
   let b64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
   while (b64.length % 4) b64 += "=";
@@ -88,6 +113,9 @@ function decodeURL(encoded: string): string {
   const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
   return new TextDecoder().decode(bytes);
 }
+
+// ========== URL Validation & SSRF Protection ==========
+
 function isValidVideoUrl(str: string): boolean {
   try {
     const u = new URL(str);
@@ -96,10 +124,13 @@ function isValidVideoUrl(str: string): boolean {
     return false;
   }
 }
+
 function isSafeUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
     const hostname = u.hostname.toLowerCase();
+
+    // Block internal/private IPs and domains
     if (
       hostname === "localhost" ||
       hostname === "127.0.0.1" ||
@@ -114,17 +145,24 @@ function isSafeUrl(urlStr: string): boolean {
     ) {
       return false;
     }
+
+    // Block 172.16.0.0 - 172.31.255.255
     if (hostname.startsWith("172.")) {
       const second = parseInt(hostname.split(".")[1], 10);
       if (second >= 16 && second <= 31) return false;
     }
+
     return u.protocol === "http:" || u.protocol === "https:";
   } catch {
     return false;
   }
 }
+
+// ========== Filename Helpers ==========
+
 function extractFilename(videoUrl: string, rawFilename: string): string {
   let filename = rawFilename.trim();
+
   if (!filename) {
     try {
       const p = new URL(videoUrl).pathname.split("/").pop() || "video.mp4";
@@ -133,15 +171,25 @@ function extractFilename(videoUrl: string, rawFilename: string): string {
       filename = "video.mp4";
     }
   }
+
+  // Extension စစ်ပြီး allowed မဟုတ်ရင် original extension ထားမယ်
   const ext = getExtension(filename);
   if (!ext || !ALLOWED_EXTENSIONS.has(ext)) {
+    // extension မရှိရင် .mp4 default
     const baseName = filename.replace(/\.[^.]+$/, "") || "video";
     filename = baseName + ".mp4";
   }
+
+  // Sanitize filename — unsafe characters ဖယ်
   filename = filename.replace(/[^\w\-.() ]/g, "_");
+
   return filename;
 }
+
+// ========== Rate Limiter ==========
+
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+
 function isRateLimited(
   ip: string,
   maxRequests = 60,
@@ -156,12 +204,15 @@ function isRateLimited(
   entry.count++;
   return entry.count > maxRequests;
 }
+
+// Periodic cleanup — memory leak prevention
 setInterval(() => {
   const now = Date.now();
   for (const [ip, entry] of rateLimitMap) {
     if (now > entry.resetAt) rateLimitMap.delete(ip);
   }
-}, 5 * 60_000); 
+}, 5 * 60_000); // 5 min ခြား clean
+
 function getClientIp(req: Request): string {
   return (
     req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
@@ -170,8 +221,12 @@ function getClientIp(req: Request): string {
     "unknown"
   );
 }
+
+// ========== Auth Session (Cookie-based) ==========
+
 const SESSION_COOKIE = "admin_session";
-const SESSION_MAX_AGE = 60 * 60 * 8; 
+const SESSION_MAX_AGE = 60 * 60 * 8; // 8 hours
+
 async function createSessionToken(): Promise<string> {
   const payload = `session:${Date.now()}`;
   const encodedPayload = encodeURL(payload);
@@ -179,31 +234,42 @@ async function createSessionToken(): Promise<string> {
   const token = encodedPayload + "." + sig;
   return token;
 }
+
 async function verifySessionToken(token: string): Promise<boolean> {
   try {
     const [encodedPayload, sig] = token.split(".");
     if (!encodedPayload || !sig) return false;
+
     const payload = decodeURL(encodedPayload);
     if (!payload.startsWith("session:")) return false;
+
     const valid = await hmacVerify(encodedPayload, sig);
     if (!valid) return false;
+
+    // Check expiry
     const timestamp = parseInt(payload.split(":")[1], 10);
     if (Date.now() - timestamp > SESSION_MAX_AGE * 1000) return false;
+
     return true;
   } catch {
     return false;
   }
 }
+
 function getSessionFromCookie(req: Request): string | null {
   const cookie = req.headers.get("cookie") || "";
   const match = cookie.match(new RegExp(`${SESSION_COOKIE}=([^;]+)`));
   return match ? match[1] : null;
 }
+
 async function isAdminAuthenticated(req: Request): Promise<boolean> {
   const token = getSessionFromCookie(req);
   if (!token) return false;
   return await verifySessionToken(token);
 }
+
+// ========== Admin HTML ==========
+
 function loginPage(error?: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -287,12 +353,14 @@ function loginPage(error?: string): string {
 </body>
 </html>`;
 }
+
 function adminPage(
   baseUrl: string,
   result?: { link?: string; error?: string }
 ): string {
   const safeLink = result?.link ? escapeHtml(result.link) : "";
   const safeError = result?.error ? escapeHtml(result.error) : "";
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -437,22 +505,28 @@ function adminPage(
         <button type="submit" class="logout-btn">Logout</button>
       </form>
     </div>
+
     <h1>Proxy Link Generator</h1>
     <p class="subtitle">Generate proxy streaming links for your app.</p>
+
     <div class="tabs">
       <div class="tab active" onclick="switchTab('single')">Single Link</div>
       <div class="tab" onclick="switchTab('batch')">Batch Links</div>
     </div>
+
     <!-- Single Link -->
     <div id="single" class="panel active">
       <form method="POST">
         <label>Direct Video URL</label>
         <input type="url" name="url" required placeholder="https://example.com/movie.mp4" id="urlInput">
+
         <label>Filename (optional)</label>
         <input type="text" name="filename" placeholder="My-Movie.mp4" id="fnInput">
+
         <button type="submit" class="btn">Generate Proxy Link</button>
       </form>
     </div>
+
     <!-- Batch Links -->
     <div id="batch" class="panel">
       <label>Paste URLs (one per line)</label>
@@ -460,6 +534,7 @@ function adminPage(
       <button class="btn" onclick="batchGenerate()">Generate All</button>
       <div id="batchResults"></div>
     </div>
+
     ${
       safeLink
         ? `
@@ -472,8 +547,10 @@ function adminPage(
     </div>`
         : ""
     }
+
     ${safeError ? `<div class="error">${safeError}</div>` : ""}
   </div>
+
   <script>
     function switchTab(name) {
       document.querySelectorAll('.tab').forEach((t, i) => {
@@ -483,6 +560,7 @@ function adminPage(
         p.classList.toggle('active', p.id === name);
       });
     }
+
     function copyLink() {
       const link = document.getElementById('genLink')?.textContent;
       if (link) {
@@ -492,12 +570,14 @@ function adminPage(
         setTimeout(() => msg.style.display = 'none', 2000);
       }
     }
+
     async function batchGenerate() {
       const text = document.getElementById('batchUrls').value.trim();
       if (!text) return;
       const urls = text.split('\\n').map(u => u.trim()).filter(u => u);
       const container = document.getElementById('batchResults');
       container.innerHTML = '<p style="margin-top:16px;color:#888;">Generating...</p>';
+
       const results = [];
       for (const url of urls) {
         try {
@@ -513,6 +593,7 @@ function adminPage(
           results.push({ url, error: e.message });
         }
       }
+
       let html = '<div style="margin-top:16px;">';
       results.forEach((r, i) => {
         if (r.link) {
@@ -534,6 +615,7 @@ function adminPage(
 </body>
 </html>`;
 }
+
 function errorPage(msg: string, status: number): Response {
   return new Response(
     `<!DOCTYPE html><html><head><title>Error</title>
@@ -543,6 +625,9 @@ function errorPage(msg: string, status: number): Response {
     { status, headers: { "Content-Type": "text/html; charset=utf-8" } }
   );
 }
+
+// ========== Retry Fetch with Timeout (လိုင်းနှေး/ကျ အတွက်) ==========
+
 async function fetchWithRetry(
   url: string,
   options: RequestInit,
@@ -550,28 +635,41 @@ async function fetchWithRetry(
   timeoutMs = 30_000
 ): Promise<Response> {
   let lastError: Error | null = null;
+
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
+
       const resp = await fetch(url, {
         ...options,
         signal: controller.signal,
       });
+
       clearTimeout(timer);
       return resp;
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
+
+      // Last attempt ဆိုရင် throw
       if (attempt === retries) break;
+
+      // Exponential backoff: 500ms, 1000ms, 2000ms...
       await new Promise((r) => setTimeout(r, 500 * Math.pow(2, attempt - 1)));
     }
   }
+
   throw lastError || new Error("Fetch failed after retries");
 }
+
+// ========== Main Handler ==========
+
 Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
   const path = url.pathname;
   const clientIp = getClientIp(req);
+
+  // ---------- Rate Limiting (Global) ----------
   if (isRateLimited(clientIp, 120, 60_000)) {
     return new Response(
       JSON.stringify({ error: "Too many requests. Please slow down." }),
@@ -584,6 +682,8 @@ Deno.serve(async (req: Request) => {
       }
     );
   }
+
+  // ---------- CORS Preflight ----------
   if (req.method === "OPTIONS") {
     return new Response(null, {
       headers: {
@@ -594,6 +694,8 @@ Deno.serve(async (req: Request) => {
       },
     });
   }
+
+  // ---------- Admin Login Page (GET) ----------
   if (path === `/${ADMIN_PATH}` && req.method === "GET") {
     if (await isAdminAuthenticated(req)) {
       return new Response(adminPage(url.origin), {
@@ -604,17 +706,23 @@ Deno.serve(async (req: Request) => {
       headers: { "Content-Type": "text/html; charset=utf-8" },
     });
   }
+
+  // ---------- Admin Login Submit (POST — no "url" field means login) ----------
   if (path === `/${ADMIN_PATH}` && req.method === "POST") {
+    // Check if already authenticated
     if (await isAdminAuthenticated(req)) {
+      // This is a generate request
       const form = await req.formData();
       const videoUrl = (form.get("url") as string || "").trim();
       const rawFilename = (form.get("filename") as string || "").trim();
+
       if (!videoUrl || !isValidVideoUrl(videoUrl)) {
         return new Response(
           adminPage(url.origin, { error: "Please enter a valid URL." }),
           { headers: { "Content-Type": "text/html; charset=utf-8" } }
         );
       }
+
       if (!isSafeUrl(videoUrl)) {
         return new Response(
           adminPage(url.origin, {
@@ -623,27 +731,36 @@ Deno.serve(async (req: Request) => {
           { headers: { "Content-Type": "text/html; charset=utf-8" } }
         );
       }
+
       const filename = extractFilename(videoUrl, rawFilename);
       const encoded = encodeURL(videoUrl);
       const sig = await hmacSign(encoded);
       const proxyLink = `${url.origin}/v/${encoded}/${sig}/${encodeURIComponent(filename)}`;
+
       return new Response(adminPage(url.origin, { link: proxyLink }), {
         headers: { "Content-Type": "text/html; charset=utf-8" },
       });
     }
+
+    // Not authenticated — this is a login attempt
     const form = await req.formData();
     const password = (form.get("password") as string || "").trim();
+
+    // Rate limit login attempts stricter
     if (isRateLimited(`login:${clientIp}`, 10, 60_000)) {
       return new Response(
         loginPage("Too many login attempts. Please wait."),
         { headers: { "Content-Type": "text/html; charset=utf-8" } }
       );
     }
+
     if (password !== ADMIN_PASSWORD) {
       return new Response(loginPage("Invalid password."), {
         headers: { "Content-Type": "text/html; charset=utf-8" },
       });
     }
+
+    // Login success — set session cookie
     const sessionToken = await createSessionToken();
     return new Response(adminPage(url.origin), {
       headers: {
@@ -652,6 +769,8 @@ Deno.serve(async (req: Request) => {
       },
     });
   }
+
+  // ---------- Admin Logout ----------
   if (path === `/${ADMIN_PATH}/logout` && req.method === "POST") {
     return new Response(loginPage(), {
       headers: {
@@ -660,89 +779,114 @@ Deno.serve(async (req: Request) => {
       },
     });
   }
+
+  // ---------- Admin API Generate (for batch — needs session) ----------
   if (path === `/${ADMIN_PATH}/api/generate` && req.method === "POST") {
     if (!(await isAdminAuthenticated(req))) {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
+
     try {
       const body = await req.json();
       const videoUrl = (body.url || "").trim();
       const rawFilename = (body.filename || "").trim();
+
       if (!videoUrl || !isValidVideoUrl(videoUrl)) {
         return Response.json({ error: "Invalid URL" }, { status: 400 });
       }
+
       if (!isSafeUrl(videoUrl)) {
         return Response.json(
           { error: "URL not allowed (internal network)" },
           { status: 400 }
         );
       }
+
       const filename = extractFilename(videoUrl, rawFilename);
       const encoded = encodeURL(videoUrl);
       const sig = await hmacSign(encoded);
       const proxyLink = `${url.origin}/v/${encoded}/${sig}/${encodeURIComponent(filename)}`;
+
       return Response.json({ link: proxyLink });
     } catch {
       return Response.json({ error: "Invalid request" }, { status: 400 });
     }
   }
+
+  // ---------- External API (Bearer token auth) ----------
   if (path === "/api/generate" && req.method === "POST") {
     try {
       const authHeader = req.headers.get("Authorization") || "";
       const token = authHeader.startsWith("Bearer ")
         ? authHeader.slice(7).trim()
         : "";
+
       if (token !== SECRET_KEY) {
         return Response.json({ error: "Unauthorized" }, { status: 403 });
       }
+
       const body = await req.json();
       const videoUrl = (body.url || "").trim();
       const rawFilename = (body.filename || "").trim();
+
       if (!videoUrl || !isValidVideoUrl(videoUrl)) {
         return Response.json({ error: "Invalid URL" }, { status: 400 });
       }
+
       if (!isSafeUrl(videoUrl)) {
         return Response.json(
           { error: "URL not allowed (internal network)" },
           { status: 400 }
         );
       }
+
       const filename = extractFilename(videoUrl, rawFilename);
       const encoded = encodeURL(videoUrl);
       const sig = await hmacSign(encoded);
       const proxyLink = `${url.origin}/v/${encoded}/${sig}/${encodeURIComponent(filename)}`;
+
       return Response.json({ link: proxyLink });
     } catch {
       return Response.json({ error: "Invalid request" }, { status: 400 });
     }
   }
+
+  // ---------- Stream / Download Proxy ----------
   const streamMatch = path.match(
     /^\/v\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)\/(.+)$/
   );
+
   if (streamMatch) {
     const [, encoded, sig, rawFilename] = streamMatch;
     const filename = decodeURIComponent(rawFilename);
+
     if (!(await hmacVerify(encoded, sig))) {
       return errorPage("Invalid Link", 403);
     }
+
     let originalUrl: string;
     try {
       originalUrl = decodeURL(encoded);
     } catch {
       return errorPage("Bad Link", 400);
     }
+
+    // SSRF check on decoded URL too
     if (!isSafeUrl(originalUrl)) {
       return errorPage("Blocked URL", 403);
     }
+
     const fetchHeaders: Record<string, string> = {
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       Referer: new URL(originalUrl).origin + "/",
     };
+
     const rangeHeader = req.headers.get("Range");
     if (rangeHeader) {
       fetchHeaders["Range"] = rangeHeader;
     }
+
     try {
       const upstream = await fetchWithRetry(
         originalUrl,
@@ -750,24 +894,30 @@ Deno.serve(async (req: Request) => {
           headers: fetchHeaders,
           redirect: "follow",
         },
-        3,    
-        30000 
+        3,    // retries
+        30000 // 30s timeout
       );
+
       if (!upstream.ok && upstream.status !== 206) {
         await upstream.body?.cancel();
         return errorPage("Source Unavailable", 502);
       }
+
       const mimeType = getMimeType(filename);
+
       const respHeaders = new Headers();
       respHeaders.set("Content-Type", mimeType);
       respHeaders.set(
         "Content-Disposition",
         `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`
       );
+
       const contentLength = upstream.headers.get("Content-Length");
       if (contentLength) respHeaders.set("Content-Length", contentLength);
+
       const contentRange = upstream.headers.get("Content-Range");
       if (contentRange) respHeaders.set("Content-Range", contentRange);
+
       respHeaders.set("Accept-Ranges", "bytes");
       respHeaders.set("Access-Control-Allow-Origin", "*");
       respHeaders.set("Access-Control-Allow-Headers", "Range");
@@ -775,8 +925,11 @@ Deno.serve(async (req: Request) => {
         "Access-Control-Expose-Headers",
         "Content-Range, Content-Length, Accept-Ranges"
       );
+      // Browser/app cache — 24 hours
       respHeaders.set("Cache-Control", "public, max-age=86400");
+      // Connection keep-alive hint
       respHeaders.set("Connection", "keep-alive");
+
       return new Response(upstream.body, {
         status: upstream.status,
         headers: respHeaders,
@@ -789,8 +942,12 @@ Deno.serve(async (req: Request) => {
       return errorPage(message, 502);
     }
   }
+
+  // ---------- Health Check ----------
   if (path === "/health") {
     return Response.json({ status: "ok", timestamp: Date.now() });
   }
+
+  // ---------- Everything else = 404 ----------
   return errorPage("Not Found", 404);
 });
